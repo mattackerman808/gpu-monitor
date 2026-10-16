@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import math
 import os
 import re
 import time
@@ -10,13 +11,25 @@ import urllib.request
 from dataclasses import dataclass
 from datetime import datetime
 
+# "Model never expires" sentinel. When keep_alive is -1 ("forever"), Ollama
+# reports an absurdly far-future expires_at (now + ~292 years, Go's max
+# duration) instead of omitting it, so we normalize that to this sentinel.
+EXPIRES_NEVER = float("inf")
+
+# An expiry more than this far in the future is treated as "never".
+_NEVER_HORIZON_SEC = 100 * 365.25 * 24 * 3600
+
 
 @dataclass
 class OllamaModel:
     name: str
     size_bytes: int  # total size resident in memory
     size_vram_bytes: int  # portion placed on the GPU(s)
-    expires_at: float  # epoch seconds (0 = unknown)
+    expires_at: float  # epoch seconds (0 = unknown, inf = never expires)
+
+    @property
+    def never_expires(self) -> bool:
+        return math.isinf(self.expires_at)
 
     @property
     def gpu_fraction(self) -> float:
@@ -43,7 +56,11 @@ def _default_host() -> str:
 
 
 def _parse_expires(value: str) -> float:
-    """Parse an RFC3339 timestamp (may have nanoseconds and/or a UTC offset)."""
+    """Parse an RFC3339 timestamp (may have nanoseconds and/or a UTC offset).
+
+    Returns EXPIRES_NEVER when the date is far enough in the future to mean
+    "model never expires" (keep_alive = -1).
+    """
     try:
         v = value.strip()
         if v.endswith(("Z", "z")):
@@ -55,9 +72,13 @@ def _parse_expires(value: str) -> float:
             if m:
                 digits, suffix = m.group(1), m.group(2)
                 time_part = whole + "." + (digits + "000000")[:6] + suffix
-        return datetime.fromisoformat(date_part + "T" + time_part).timestamp()
+        dt = datetime.fromisoformat(date_part + "T" + time_part)
+        ts = dt.timestamp()
     except ValueError:
         return 0.0
+    if ts - time.time() > _NEVER_HORIZON_SEC:
+        return EXPIRES_NEVER
+    return ts
 
 
 def read_ollama(host: str | None = None, timeout: float = 1.0) -> list[OllamaModel]:
@@ -219,8 +240,9 @@ def _main() -> None:
     if not models:
         print("ollama reachable, no models loaded")
     for m in models:
+        until = "never" if m.never_expires else f"{m.expires_at:.0f}"
         print(f"{m.name}: {m.size_bytes / 2**30:.2f} GiB | "
-              f"{int(round(m.gpu_fraction * 100))}% GPU | until {m.expires_at:.0f}")
+              f"{int(round(m.gpu_fraction * 100))}% GPU | until {until}")
     log_path = find_server_log()
     if not log_path:
         print("no ollama server log found")

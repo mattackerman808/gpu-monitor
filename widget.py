@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import math
 import time
 from pathlib import Path
 
@@ -166,7 +167,9 @@ class _OllamaRow(QFrame):
         self.name_label.setText(model.name)
         self.split_bar.setValue(int(round(model.gpu_fraction * 100)))
         bits = [f"{model.size_bytes / 2**30:.1f} GiB", _fmt_split(model.gpu_fraction)]
-        if model.expires_at > 0:
+        if math.isinf(model.expires_at):
+            bits.append("until never")
+        elif model.expires_at > 0:
             bits.append(f"until {_fmt_mmss(model.expires_at - now)}")
         self.info_label.setText(" \u00b7 ".join(bits))
 
